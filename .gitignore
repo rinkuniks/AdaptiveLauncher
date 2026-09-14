@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+app/build/
+.kotlin/
+
+# Android Studio
+.idea/
+*.iml
+local.properties
+*.hprof
+
+# APKs (built artifact, not source)
+*.apk
+*.aab
+app-debug.apk
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Hermesy
+.hermes/
