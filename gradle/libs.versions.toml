@@ -16,6 +16,7 @@ hiltNavCompose = "1.2.0"
 # Storage
 room = "2.8.4"
 datastore = "1.1.4"
+work = "2.10.0"
 # UI helpers
 coil = "2.7.0"
 splash = "1.0.1"
@@ -43,6 +44,7 @@ androidx-room-runtime = { module = "androidx.room:room-runtime", version.ref = "
 androidx-room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
 androidx-room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
 androidx-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "splash" }
+androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }

@@ -6,6 +6,8 @@ import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -32,6 +34,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -47,20 +51,30 @@ import com.adaptive.launcher.core.device.rememberLayoutConfig
 import com.adaptive.launcher.core.model.LauncherApp
 import com.adaptive.launcher.core.performance.ColdStartTracer
 import com.adaptive.launcher.data.home.AppListFilter
+import com.adaptive.launcher.data.home.HomeAlignment
+import com.adaptive.launcher.data.home.HomeVAlignment
 import com.adaptive.launcher.data.home.HomeMode
 import com.adaptive.launcher.domain.gestures.LauncherAction
 import com.adaptive.launcher.domain.gestures.LauncherGesture
 import com.adaptive.launcher.domain.search.CalculatorProvider
 import com.adaptive.launcher.feature.widgets.WidgetDeck
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import com.adaptive.launcher.core.common.formatScreenTime
+import com.adaptive.launcher.core.ui.OpenChallenge
+import com.adaptive.launcher.feature.screentime.ScreenTimeViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 @Composable
-fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Unit = {}, onOpenOnboarding: ()->Unit = {}, onOpenStream: (String)->Unit = {}) {
+fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), screenTimeViewModel: ScreenTimeViewModel = hiltViewModel(), clockViewModel: ClockViewModel = hiltViewModel(), onOpenSettings: ()->Unit = {}, onOpenOnboarding: ()->Unit = {}, onOpenStream: (String)->Unit = {}, onOpenScreenTime: ()->Unit = {}) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val drawerApps by viewModel.drawerApps.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val challengeApp by viewModel.challengeApp.collectAsStateWithLifecycle()
+    val todayUsage by screenTimeViewModel.totalUsage.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val roleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         viewModel.refreshDefaultLauncherState()
@@ -72,11 +86,23 @@ fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Un
 
     LaunchedEffect(Unit) { ColdStartTracer.markFirstFrame() }
 
-    HomeScreen(
-        uiState = ui,
-        drawerApps = drawerApps,
-        searchResults = searchResults,
-        onLaunch = { viewModel.launchApp(it) },
+    val twelveHourEnabled = ui.twelveHour
+    val timeParts by clockViewModel.timeParts.collectAsStateWithLifecycle()
+    LaunchedEffect(twelveHourEnabled) { clockViewModel.startTicker(twelveHourEnabled) }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { clockViewModel.stopTicker() } }
+
+    if (ui.enablePager) {
+        // Opt-in pager: Apps | Home | ScreenTime — swipeable, matches Escape pager concept
+        val pagerState = rememberPagerState(initialPage = 1, pageCount = { 3 })
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+            when (page) {
+                0 -> DrawerPagerPage(drawerApps = drawerApps, uiState = ui, onLaunch = { viewModel.tryLaunch(it) }, onLongPress = {})
+                1 -> HomeScreen(
+                    uiState = ui,
+                    drawerApps = drawerApps,
+                    searchResults = searchResults,
+                    todayUsageMs = todayUsage,
+        onLaunch = { viewModel.tryLaunch(it) },
         onSearchChange = { viewModel.onSearchQueryChange(it) },
         onSearchingChange = { viewModel.setSearching(it) },
         onSectionSelected = { viewModel.selectSection(it) },
@@ -96,6 +122,9 @@ fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Un
         onPerformDoubleTap = { viewModel.performGesture(doubleTapAction, onOpenSearch = { viewModel.setSearching(!ui.isSearching) }, onOpenAppList = {}, onOpenSettings = onOpenSettings) },
         onAddWidgetId = { id -> viewModel.addWidgetId(id) },
         onRemoveWidgetId = { id -> viewModel.removeWidgetId(id) },
+        onOpenScreenTime = onOpenScreenTime,
+        onToggleHidden = { viewModel.toggleHidden(it) },
+        onToggleChallenge = { viewModel.toggleChallenge(it) },
         onRequestDefaultLauncher = {
             val intent = viewModel.requestDefaultLauncherIntent()
             if (intent != null) {
@@ -103,8 +132,79 @@ fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Un
                     try { context.startActivity(intent) } catch (_: Exception) {}
                 }
             }
+        },
+        timeParts = timeParts
+                )
+                2 -> ScreenTimePagerPage(todayUsageMs = todayUsage, onOpenScreenTime = onOpenScreenTime)
+            }
         }
-    )
+    } else {
+        Box(Modifier.fillMaxSize()) {
+            HomeScreen(
+                uiState = ui,
+                drawerApps = drawerApps,
+                searchResults = searchResults,
+                todayUsageMs = todayUsage,
+                onLaunch = { viewModel.tryLaunch(it) },
+                onSearchChange = { viewModel.onSearchQueryChange(it) },
+                onSearchingChange = { viewModel.setSearching(it) },
+                onSectionSelected = { viewModel.selectSection(it) },
+                onClearSection = { viewModel.clearSection() },
+                onToggleFavorite = { viewModel.toggleFavorite(it) },
+                onPin = { viewModel.pinApp(it) },
+                onUnpin = { viewModel.unpinApp(it) },
+                onOpenSettings = onOpenSettings,
+                onOpenStream = onOpenStream,
+                onAddToStream = { streamId, app -> viewModel.addToStream(streamId, app) },
+                onRemoveFromStream = { streamId, pkg -> viewModel.removeFromStream(streamId, pkg) },
+                onSetFilter = { viewModel.setFilter(it) },
+                onSetHomeMode = { viewModel.setHomeMode(it) },
+                onToggleHomePkg = { viewModel.toggleHomePackage(it) },
+                onPerformSwipeUp = { viewModel.performGesture(swipeUpAction, onOpenSearch = { viewModel.setSearching(true) }, onOpenAppList = {}, onOpenSettings = onOpenSettings) },
+                onPerformSwipeDown = { viewModel.performGesture(swipeDownAction, onOpenSearch = { viewModel.setSearching(true) }, onOpenAppList = {}, onOpenSettings = onOpenSettings) },
+                onPerformDoubleTap = { viewModel.performGesture(doubleTapAction, onOpenSearch = { viewModel.setSearching(!ui.isSearching) }, onOpenAppList = {}, onOpenSettings = onOpenSettings) },
+                onAddWidgetId = { id -> viewModel.addWidgetId(id) },
+                onRemoveWidgetId = { id -> viewModel.removeWidgetId(id) },
+                onOpenScreenTime = onOpenScreenTime,
+                onToggleHidden = { viewModel.toggleHidden(it) },
+                onToggleChallenge = { viewModel.toggleChallenge(it) },
+                onRequestDefaultLauncher = {
+                    val intent = viewModel.requestDefaultLauncherIntent()
+                    if (intent != null) {
+                        try { roleLauncher.launch(intent) } catch (_: Exception) {
+                            try { context.startActivity(intent) } catch (_: Exception) {}
+                        }
+                    }
+                },
+                timeParts = timeParts
+            )
+            AnimatedVisibility(visible = challengeApp != null, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+                val cApp = challengeApp
+                if (cApp != null) {
+                    OpenChallenge(
+                        haptics = LocalHapticFeedback.current,
+                        enabled = ui.hapticFeedback,
+                        openApp = { viewModel.confirmChallengeLaunch() },
+                        goBack = { viewModel.dismissChallenge() }
+                    )
+                }
+            }
+        }
+    }
+    // Shared challenge overlay for pager variant (pager's Home page also needs it)
+    if (ui.enablePager) {
+        AnimatedVisibility(visible = challengeApp != null, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+            val cApp = challengeApp
+            if (cApp != null) {
+                OpenChallenge(
+                    haptics = LocalHapticFeedback.current,
+                    enabled = ui.hapticFeedback,
+                    openApp = { viewModel.confirmChallengeLaunch() },
+                    goBack = { viewModel.dismissChallenge() }
+                )
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -113,6 +213,7 @@ fun HomeScreen(
     uiState: HomeUiState,
     drawerApps: List<LauncherApp>,
     searchResults: List<LauncherApp>,
+    todayUsageMs: Long = 0L,
     onLaunch: (LauncherApp) -> Unit,
     onSearchChange: (String) -> Unit,
     onSearchingChange: (Boolean) -> Unit,
@@ -133,7 +234,11 @@ fun HomeScreen(
     onPerformDoubleTap: () -> Unit,
     onAddWidgetId: (Int) -> Unit,
     onRemoveWidgetId: (Int) -> Unit,
+    onOpenScreenTime: () -> Unit = {},
+    onToggleHidden: (LauncherApp) -> Unit = {},
+    onToggleChallenge: (LauncherApp) -> Unit = {},
     onRequestDefaultLauncher: () -> Unit,
+    timeParts: TimeParts = TimeParts(0,0,true),
 ) {
     var showAppSheet by remember { mutableStateOf<LauncherApp?>(null) }
     var showDrawer by remember { mutableStateOf(false) }
@@ -185,13 +290,13 @@ fun HomeScreen(
                     onVerticalDrag = { change, dragAmount -> totalY += dragAmount; change.consume() },
                     onDragEnd = {
                         if (totalY < -90 && !uiState.isSearching && !showDrawer) {
-                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (uiState.hapticFeedback) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             onPerformSwipeUp()
                             // Default still opens drawer if gesture is OpenAppList/None
                             if (!showDrawer) showDrawer = true
                         }
                         if (totalY > 110 && !uiState.isSearching && !showDrawer) {
-                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            if (uiState.hapticFeedback) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             onPerformSwipeDown()
                         }
                         if (totalY > 120 && showDrawer) showDrawer = false
@@ -201,7 +306,27 @@ fun HomeScreen(
             }
             .pointerInput(Unit) {
                 detectTapGestures(onDoubleTap = {
-                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (uiState.hapticFeedback) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (uiState.doubleTapToLock) {
+                        // Try lock via ViewModel (accessibility instance or DPM); if it succeeds, don't also fire gesture
+                        try {
+                            // Access ViewModel via local composition is not available here — do direct accessibility/DPM check
+                            val a11y = android.provider.Settings.Secure.getString(context.contentResolver, "enabled_accessibility_services") ?: ""
+                            val hasA11y = a11y.contains(context.packageName)
+                            var locked = false
+                            if (hasA11y) {
+                                try { locked = com.adaptive.launcher.core.accessibility.LockAccessibilityService.instance?.tryLock() == true } catch(_:Exception){}
+                            }
+                            if (!locked) {
+                                try {
+                                    val dpm = context.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+                                    val admin = android.content.ComponentName(context, com.adaptive.launcher.core.accessibility.LockDeviceAdminReceiver::class.java)
+                                    if (dpm != null && dpm.isAdminActive(admin)) { dpm.lockNow(); locked = true }
+                                } catch(_:Exception){}
+                            }
+                            if (locked) return@detectTapGestures
+                        } catch(_:Exception){}
+                    }
                     onPerformDoubleTap()
                 })
             }
@@ -215,10 +340,19 @@ fun HomeScreen(
                 .imePadding()
                 .padding(horizontal = horizontalPad)
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-                ClockHeader(compact = !layout.isTall)
-                IconButton(onClick = onOpenSettings, modifier = Modifier.padding(top = 6.dp)) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
+            if (uiState.showClock || uiState.showDate) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = when(uiState.homeAlignment){ HomeAlignment.Left -> Arrangement.Start; HomeAlignment.Center -> Arrangement.Center; HomeAlignment.Right -> Arrangement.End }, verticalAlignment = Alignment.Top) {
+                    if (uiState.showClock || uiState.showDate) ClockHeader(compact = !layout.isTall, showClock = uiState.showClock, bigClock = uiState.bigClock, showDate = uiState.showDate, timeParts = timeParts)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = onOpenSettings, modifier = Modifier.padding(top = 6.dp)) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                    }
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    IconButton(onClick = onOpenSettings, modifier = Modifier.padding(top = 6.dp)) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                    }
                 }
             }
 
@@ -302,6 +436,19 @@ fun HomeScreen(
                 }
             }
 
+            // Screen time glance — respects showScreenTimeHome; hideScreenTimePage hides nav but glance still optional
+            if (!uiState.isSearching && todayUsageMs > 0 && uiState.showScreenTimeHome && !uiState.hideScreenTimePage) {
+                Card(modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable{ onOpenScreenTime() }, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(14.dp)) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text("Screen time today: ${formatScreenTime(todayUsageMs)}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                        }
+                        TextButton(onClick = onOpenScreenTime, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) { Text("View", style = MaterialTheme.typography.labelSmall) }
+                    }
+                }
+            }
+
             if (uiState.streams.isNotEmpty() && !uiState.isSearching) {
                 LazyRow(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(end = 8.dp)) {
                     items(uiState.streams, key = { it.id }) { stream ->
@@ -312,7 +459,7 @@ fun HomeScreen(
             }
 
             if (uiState.favorites.isNotEmpty() && !uiState.isSearching && uiState.selectedSection == null) {
-                Column(Modifier.padding(top = 12.dp)) {
+                Column(Modifier.padding(top = 12.dp), horizontalAlignment = when(uiState.homeAlignment){ HomeAlignment.Left -> Alignment.Start; HomeAlignment.Center -> Alignment.CenterHorizontally; HomeAlignment.Right -> Alignment.End }) {
                     Text("Favorites", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(4.dp))
                     uiState.favorites.forEach { fav ->
@@ -323,7 +470,7 @@ fun HomeScreen(
                 HorizontalDivider(Modifier.padding(vertical = 10.dp))
             }
 
-            SearchBar(query = uiState.searchQuery, isSearching = uiState.isSearching, onQueryChange = onSearchChange, onSearchingChange = onSearchingChange)
+            if (uiState.showSearchBox && !uiState.bottomSearch) SearchBar(query = uiState.searchQuery, isSearching = uiState.isSearching, onQueryChange = onSearchChange, onSearchingChange = onSearchingChange)
 
             if (calcResult != null && uiState.isSearching) {
                 Card(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
@@ -354,10 +501,10 @@ fun HomeScreen(
                                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = railWidth + 4.dp), contentPadding = PaddingValues(top = 8.dp, bottom = 12.dp)) {
                                     groupedLandscape.forEach { (section, apps) ->
                                         item(key = "header_$section") { Text(section.toString(), modifier = Modifier.padding(top = 10.dp, bottom = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
-                                        items(apps, key = { it.packageName + it.activityName + it.user.hashCode() }) { app -> AppRow(app = app, notifCount = uiState.notifications[app.packageName]?.size ?: 0, isWork = app.user != myUser, onLaunch = { onLaunch(app) }, onLongPress = { showAppSheet = app }) }
+                                        items(apps, key = { it.packageName + it.activityName + it.user.hashCode() }) { app -> AppRow(app = app, notifCount = uiState.notifications[app.packageName]?.size ?: 0, isWork = app.user != myUser, isChallenge = app.packageName in uiState.challengePackages, onLaunch = { onLaunch(app) }, onLongPress = { showAppSheet = app }) }
                                     }
                                 }
-                                if (!uiState.isSearching) AlphabetRail(sections = uiState.sections, selected = uiState.selectedSection, modifier = Modifier.align(Alignment.CenterEnd).width(railWidth).fillMaxHeight(), onSectionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); onSectionSelected(it) }, onClear = onClearSection)
+                                if (!uiState.isSearching) AlphabetRail(sections = uiState.sections, selected = uiState.selectedSection, modifier = Modifier.align(Alignment.CenterEnd).width(railWidth).fillMaxHeight(), onSectionSelected = { if (uiState.hapticFeedback) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); onSectionSelected(it) }, onClear = onClearSection)
                             }
                         }
                     }
@@ -376,22 +523,23 @@ fun HomeScreen(
                             LazyVerticalGrid(columns = GridCells.Fixed(layout.columns), modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 8.dp, bottom = 64.dp, end = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 grouped.forEach { (section, apps) ->
                                     item(key = "hdr_$section") { Text(section.toString(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
-                                    items(apps, key = { it.packageName + it.activityName + it.user.hashCode() }) { app -> AppRow(app = app, notifCount = uiState.notifications[app.packageName]?.size ?: 0, isWork = app.user != myUser, onLaunch = { onLaunch(app) }, onLongPress = { showAppSheet = app }) }
+                                    items(apps, key = { it.packageName + it.activityName + it.user.hashCode() }) { app -> AppRow(app = app, notifCount = uiState.notifications[app.packageName]?.size ?: 0, isWork = app.user != myUser, isChallenge = app.packageName in uiState.challengePackages, onLaunch = { onLaunch(app) }, onLongPress = { showAppSheet = app }) }
                                 }
                             }
                         } else {
                             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(end = railWidth + 4.dp), contentPadding = PaddingValues(top = 8.dp, bottom = 64.dp)) {
                                 grouped.forEach { (section, apps) ->
                                     if (!uiState.isSearching) { item(key = "header_$section") { Text(section.toString(), modifier = Modifier.padding(top = 10.dp, bottom = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) } }
-                                    items(apps, key = { it.packageName + it.activityName + it.user.hashCode() }) { app -> AppRow(app = app, notifCount = uiState.notifications[app.packageName]?.size ?: 0, isWork = app.user != myUser, onLaunch = { onLaunch(app) }, onLongPress = { showAppSheet = app }) }
+                                    items(apps, key = { it.packageName + it.activityName + it.user.hashCode() }) { app -> AppRow(app = app, notifCount = uiState.notifications[app.packageName]?.size ?: 0, isWork = app.user != myUser, isChallenge = app.packageName in uiState.challengePackages, onLaunch = { onLaunch(app) }, onLongPress = { showAppSheet = app }) }
                                 }
                             }
-                            if (!uiState.isSearching) AlphabetRail(sections = uiState.sections, selected = uiState.selectedSection, modifier = Modifier.align(Alignment.CenterEnd).width(railWidth).fillMaxHeight(), onSectionSelected = { haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); onSectionSelected(it) }, onClear = onClearSection)
+                            if (!uiState.isSearching) AlphabetRail(sections = uiState.sections, selected = uiState.selectedSection, modifier = Modifier.align(Alignment.CenterEnd).width(railWidth).fillMaxHeight(), onSectionSelected = { if (uiState.hapticFeedback) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); onSectionSelected(it) }, onClear = onClearSection)
                         }
                     }
                 }
             }
 
+            if (uiState.showSearchBox && uiState.bottomSearch) SearchBar(query = uiState.searchQuery, isSearching = uiState.isSearching, onQueryChange = onSearchChange, onSearchingChange = onSearchingChange)
             // Swipe-up affordance
             if(!uiState.isSearching){
                 Row(Modifier.fillMaxWidth().clickable{ showDrawer=true }.padding(vertical=8.dp), horizontalArrangement=Arrangement.Center, verticalAlignment=Alignment.CenterVertically){
@@ -405,14 +553,14 @@ fun HomeScreen(
         }
 
         showAppSheet?.let { app ->
-            AppActionSheet(app = app, isFavorite = uiState.favorites.any { it.packageName == app.packageName }, streams = uiState.streams, onDismiss = { showAppSheet = null }, onLaunch = { onLaunch(app); showAppSheet = null }, onToggleFavorite = { onToggleFavorite(app); showAppSheet = null }, onAddToStream = { sid -> onAddToStream(sid, app); showAppSheet = null })
+            AppActionSheet(app = app, isFavorite = uiState.favorites.any { it.packageName == app.packageName }, streams = uiState.streams, onDismiss = { showAppSheet = null }, onLaunch = { onLaunch(app); showAppSheet = null }, onToggleFavorite = { onToggleFavorite(app); showAppSheet = null }, onAddToStream = { sid -> onAddToStream(sid, app); showAppSheet = null }, onToggleHidden = { onToggleHidden(app) }, onToggleChallenge = { onToggleChallenge(app) }, isHidden = app.packageName in uiState.hiddenPackages, isChallenge = app.packageName in uiState.challengePackages)
         }
     }
 
     if(showDrawer){
         ModalBottomSheet(onDismissRequest={ showDrawer=false }, sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
             Column(Modifier.fillMaxWidth().padding(horizontal=horizontalPad).padding(bottom=12.dp)){
-                Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically){
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = when(uiState.appsAlignment){ HomeAlignment.Left -> Arrangement.SpaceBetween; HomeAlignment.Center -> Arrangement.Center; HomeAlignment.Right -> Arrangement.End }, verticalAlignment=Alignment.CenterVertically){
                     Text("All apps", style=MaterialTheme.typography.titleMedium, fontWeight=FontWeight.Bold)
                     Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
                         AppListFilter.values().forEach{ f ->
@@ -521,20 +669,55 @@ interface WidgetEntryPoint {
     fun widgetRepo(): com.adaptive.launcher.data.widgets.WidgetRepository
 }
 
+
 @Composable
-private fun ClockHeader(compact: Boolean = false) {
+private fun DrawerPagerPage(drawerApps: List<LauncherApp>, uiState: HomeUiState, onLaunch: (LauncherApp) -> Unit, onLongPress: (LauncherApp) -> Unit) {
+    val grouped = drawerApps.groupBy { it.section }.toList().sortedBy { if (it.first == '#') Int.MAX_VALUE else it.first.code }
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).windowInsetsPadding(WindowInsets.statusBars)) {
+        Text("All apps", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp, bottom = 8.dp))
+        Text("${drawerApps.size} apps • swipe to Home", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyColumn(Modifier.fillMaxSize().padding(top = 8.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+            grouped.forEach { (section, apps) ->
+                item(key = "pg_hdr_$section") { Text(section.toString(), modifier = Modifier.padding(top = 10.dp, bottom = 4.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
+                items(apps, key = { it.packageName + it.activityName + "_pg" }) { app ->
+                    AppRow(app = app, notifCount = 0, isWork = false, isChallenge = app.packageName in uiState.challengePackages, onLaunch = { onLaunch(app) }, onLongPress = { onLongPress(app) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScreenTimePagerPage(todayUsageMs: Long, onOpenScreenTime: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).windowInsetsPadding(WindowInsets.statusBars), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text("Screen time", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(12.dp))
+        Text(if (todayUsageMs > 0) formatScreenTime(todayUsageMs) else "No usage yet", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Light)
+        Text("today", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onOpenScreenTime) { Text("Open dashboard") }
+        Text("Swipe to Home", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+    }
+}
+
+@Composable
+private fun ClockHeader(compact: Boolean = false, showClock: Boolean = true, bigClock: Boolean = false, showDate: Boolean = true, timeParts: TimeParts = TimeParts(0,0,true)) {
     var now by remember { mutableStateOf(Date()) }
-    LaunchedEffect(Unit) { while (true) { now = Date(); kotlinx.coroutines.delay(1000) } }
-    val time = remember(now) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(now) }
+    LaunchedEffect(showClock, showDate) { while (true) { now = Date(); kotlinx.coroutines.delay(1000) } }
     val date = remember(now) { SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(now).uppercase(Locale.getDefault()) }
+    val hourStr = "%02d".format(timeParts.hour)
+    val minStr = "%02d".format(timeParts.minute)
+    val displayTime = if (showClock) "$hourStr:$minStr" else ""
     Column(modifier = Modifier.padding(top = if (compact) 10.dp else 14.dp)) {
-        Text(time, style = MaterialTheme.typography.displaySmall.copy(fontSize = if (compact) 32.sp else 36.sp), fontWeight = FontWeight.Light)
-        Text(date, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp)
+        if (showClock) Text(displayTime, style = MaterialTheme.typography.displaySmall.copy(fontSize = if (compact) (if (bigClock) 40.sp else 32.sp) else (if (bigClock) 44.sp else 36.sp)), fontWeight = FontWeight.Light)
+        if (showDate) Text(date, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp)
     }
 }
 
 @Composable
 private fun SearchBar(query: String, isSearching: Boolean, onQueryChange: (String) -> Unit, onSearchingChange: (Boolean) -> Unit) {
+    val focusRequester = androidx.compose.ui.focus.FocusRequester()
+    LaunchedEffect(isSearching) { if (isSearching) kotlinx.coroutines.delay(80); try { focusRequester.requestFocus() } catch(_:Exception){} }
     Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
         if (!isSearching) {
             Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable { onSearchingChange(true) }.padding(horizontal = 14.dp, vertical = 12.dp)) {
@@ -542,7 +725,7 @@ private fun SearchBar(query: String, isSearching: Boolean, onQueryChange: (Strin
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                BasicTextField(value = query, onValueChange = onQueryChange, modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 14.dp, vertical = 12.dp), singleLine = true, decorationBox = { inner -> if (query.isEmpty()) Text("Type to search  \u2022  try \"yt\"  \u2022  \"12*19\"", color = MaterialTheme.colorScheme.onSurfaceVariant); inner() })
+                BasicTextField(value = query, onValueChange = onQueryChange, modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 14.dp, vertical = 12.dp).focusRequester(focusRequester), singleLine = true, decorationBox = { inner -> if (query.isEmpty()) Text("Type to search  \u2022  try \"yt\"  \u2022  \"12*19\"", color = MaterialTheme.colorScheme.onSurfaceVariant); inner() })
                 Spacer(Modifier.width(8.dp)); TextButton(onClick = { onSearchingChange(false) }) { Text("Cancel") }
             }
         }
@@ -550,7 +733,7 @@ private fun SearchBar(query: String, isSearching: Boolean, onQueryChange: (Strin
 }
 
 @Composable
-private fun AppRow(app: LauncherApp, notifCount: Int, isWork: Boolean, onLaunch: () -> Unit, onLongPress: () -> Unit) {
+private fun AppRow(app: LauncherApp, notifCount: Int, isWork: Boolean, isChallenge: Boolean = false, onLaunch: () -> Unit, onLongPress: () -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).combinedClickable(onClick = onLaunch, onLongClick = onLongPress).padding(horizontal = 4.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
             Text(app.label.firstOrNull()?.uppercase() ?: "#", color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
@@ -565,6 +748,7 @@ private fun AppRow(app: LauncherApp, notifCount: Int, isWork: Boolean, onLaunch:
             }
             Text(app.packageName, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        if (isChallenge) { Box(Modifier.padding(end=4.dp).clip(RoundedCornerShape(6.dp)).background(MaterialTheme.colorScheme.errorContainer).padding(horizontal=4.dp, vertical=1.dp)) { Text("5s", fontSize=8.sp, color=MaterialTheme.colorScheme.onErrorContainer) } }
         if (app.isFavorite) { Icon(Icons.Filled.Star, contentDescription = "Favorite", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary) }
     }
 }
@@ -593,7 +777,7 @@ private fun AlphabetRail(sections: List<Char>, selected: Char?, modifier: Modifi
 }
 
 @Composable
-private fun AppActionSheet(app: LauncherApp, isFavorite: Boolean, streams: List<com.adaptive.launcher.data.streams.StreamEntity>, onDismiss: () -> Unit, onLaunch: () -> Unit, onToggleFavorite: () -> Unit, onAddToStream: (String) -> Unit) {
+private fun AppActionSheet(app: LauncherApp, isFavorite: Boolean, streams: List<com.adaptive.launcher.data.streams.StreamEntity>, onDismiss: () -> Unit, onLaunch: () -> Unit, onToggleFavorite: () -> Unit, onAddToStream: (String) -> Unit, onToggleHidden: () -> Unit = {}, onToggleChallenge: () -> Unit = {}, isHidden: Boolean = false, isChallenge: Boolean = false) {
     val context = LocalContext.current
     var shortcuts by remember { mutableStateOf<List<android.content.pm.ShortcutInfo>>(emptyList()) }
     LaunchedEffect(app.packageName) {
@@ -614,7 +798,9 @@ private fun AppActionSheet(app: LauncherApp, isFavorite: Boolean, streams: List<
                 TextButton(onClick = onToggleFavorite, modifier = Modifier.fillMaxWidth()) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (isFavorite) "Remove from favorites" else "Add to favorites") } }
                 if(shortcuts.isNotEmpty()){ HorizontalDivider(Modifier.padding(vertical = 6.dp)); Text("Shortcuts", style=MaterialTheme.typography.labelMedium); shortcuts.take(4).forEach{ sc -> TextButton(onClick={ try{ val la = context.getSystemService(android.content.Context.LAUNCHER_APPS_SERVICE) as android.content.pm.LauncherApps; la.startShortcut(sc, null, null)}catch(_:Exception){}; onDismiss()}, modifier=Modifier.fillMaxWidth()){ Text(sc.shortLabel?.toString() ?: sc.longLabel?.toString() ?: "Shortcut", modifier=Modifier.fillMaxWidth()) } } }
                 if(streams.isNotEmpty()){ HorizontalDivider(Modifier.padding(vertical = 6.dp)); Text("Add to stream", style=MaterialTheme.typography.labelMedium); LazyRow(horizontalArrangement=Arrangement.spacedBy(6.dp)){ items(streams, key={it.id}){ s -> AssistChip(onClick={ onAddToStream(s.id) }, label={ Text(s.name, style=MaterialTheme.typography.labelSmall)}) } } }
+                HorizontalDivider(Modifier.padding(vertical = 6.dp)); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){ OutlinedButton(onClick={ onToggleHidden(); onDismiss() }, modifier=Modifier.weight(1f)){ Text(if(isHidden) "Unhide" else "Hide", style=MaterialTheme.typography.labelSmall) }; OutlinedButton(onClick={ onToggleChallenge(); onDismiss() }, modifier=Modifier.weight(1f)){ Text(if(isChallenge) "Remove challenge" else "Add challenge", style=MaterialTheme.typography.labelSmall) } }
                 HorizontalDivider(Modifier.padding(vertical = 6.dp)); Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){ OutlinedButton(onClick={ try{ val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply{ data = android.net.Uri.parse("package:${app.packageName}"); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }; context.startActivity(intent)}catch(_:Exception){}}, modifier=Modifier.weight(1f)){ Text("App info", style=MaterialTheme.typography.labelSmall) }; OutlinedButton(onClick={ try{ val intent = Intent(Intent.ACTION_DELETE).apply{ data = android.net.Uri.parse("package:${app.packageName}"); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)}; context.startActivity(intent)}catch(_:Exception){}}, modifier=Modifier.weight(1f)){ Text("Uninstall", style=MaterialTheme.typography.labelSmall) } }
             }
         }, confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } })
+
 }

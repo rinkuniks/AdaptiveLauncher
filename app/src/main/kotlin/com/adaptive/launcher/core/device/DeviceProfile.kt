@@ -36,17 +36,34 @@ data class DeviceProfile(
 }
 
 object DeviceProfileFactory {
+    @Suppress("DEPRECATION")
     fun fromContext(context: Context): DeviceProfile {
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val display = wm.defaultDisplay
         val metrics = DisplayMetrics()
-        try { display.getRealMetrics(metrics) } catch (_: Exception) { context.resources.displayMetrics.let { metrics.setTo(it) } }
+        var refreshRate = 60f
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = wm.currentWindowMetrics.bounds
+                metrics.widthPixels = bounds.width()
+                metrics.heightPixels = bounds.height()
+                metrics.density = context.resources.displayMetrics.density
+                metrics.densityDpi = context.resources.displayMetrics.densityDpi
+                refreshRate = context.display?.refreshRate ?: 60f
+                // Also try real metrics as fallback for accurate px
+                try { @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(metrics) } catch (_: Exception) {}
+            } else {
+                @Suppress("DEPRECATION")
+                val display = wm.defaultDisplay
+                @Suppress("DEPRECATION")
+                display.getRealMetrics(metrics)
+                refreshRate = display.refreshRate
+            }
+        } catch (_: Exception) { context.resources.displayMetrics.let { metrics.setTo(it) } }
         val width = metrics.widthPixels
         val height = metrics.heightPixels
         val density = metrics.density
         val densityDpi = metrics.densityDpi
         val fontScale = context.resources.configuration.fontScale
-        val refreshRate = try { display.refreshRate } catch (_: Exception) { 60f }
         // cutout / nav bar estimated via resources; refined at composition via WindowInsets
         val cutoutTop = run {
             val id = context.resources.getIdentifier("status_bar_height", "dimen", "android")

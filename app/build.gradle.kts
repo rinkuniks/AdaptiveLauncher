@@ -68,6 +68,7 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.splashscreen)
+    implementation(libs.androidx.work.runtime)
 
     // Compose BOM
     implementation(platform(libs.compose.bom))

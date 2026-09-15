@@ -3,6 +3,7 @@ package com.adaptive.launcher.ui.theme
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -10,6 +11,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import com.adaptive.launcher.domain.themes.ThemeMode
 
 private val Light = lightColorScheme(
@@ -40,10 +42,19 @@ private val Amoled = darkColorScheme(
     outlineVariant = Color(0xFF2A2A2A)
 )
 
+private fun fontFamilyFor(name: String): FontFamily = when(name){
+    "Mono" -> FontFamily.Monospace
+    "Serif" -> FontFamily.Serif
+    "Outfit", "Inter", "Roboto" -> FontFamily.SansSerif
+    else -> FontFamily.Default
+}
+
 @Composable
 fun AdaptiveLauncherTheme(
     themeMode: ThemeMode = ThemeMode.System,
     dynamic: Boolean = false,
+    fontName: String = "System",
+    showWallpaper: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -63,5 +74,27 @@ fun AdaptiveLauncherTheme(
         darkTheme -> Dark
         else -> Light
     }
-    MaterialTheme(colorScheme = scheme, content = content)
+    // Wallpaper: when enabled, make background/surface transparent so system wallpaper shows through
+    val finalScheme = if (showWallpaper) scheme.copy(background = Color.Transparent, surface = Color.Transparent, surfaceVariant = scheme.surfaceVariant.copy(alpha = 0.85f)) else scheme
+    val typography = Typography().let { base ->
+        val ff = fontFamilyFor(fontName)
+        base.copy(
+            displayLarge = base.displayLarge.copy(fontFamily = ff),
+            displayMedium = base.displayMedium.copy(fontFamily = ff),
+            displaySmall = base.displaySmall.copy(fontFamily = ff),
+            headlineLarge = base.headlineLarge.copy(fontFamily = ff),
+            headlineMedium = base.headlineMedium.copy(fontFamily = ff),
+            headlineSmall = base.headlineSmall.copy(fontFamily = ff),
+            titleLarge = base.titleLarge.copy(fontFamily = ff),
+            titleMedium = base.titleMedium.copy(fontFamily = ff),
+            titleSmall = base.titleSmall.copy(fontFamily = ff),
+            bodyLarge = base.bodyLarge.copy(fontFamily = ff),
+            bodyMedium = base.bodyMedium.copy(fontFamily = ff),
+            bodySmall = base.bodySmall.copy(fontFamily = ff),
+            labelLarge = base.labelLarge.copy(fontFamily = ff),
+            labelMedium = base.labelMedium.copy(fontFamily = ff),
+            labelSmall = base.labelSmall.copy(fontFamily = ff),
+        )
+    }
+    MaterialTheme(colorScheme = finalScheme, typography = typography, content = content)
 }
