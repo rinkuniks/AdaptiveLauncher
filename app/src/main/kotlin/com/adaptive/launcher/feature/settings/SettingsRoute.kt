@@ -1,7 +1,11 @@
 package com.adaptive.launcher.feature.settings
 
+import android.app.Activity
+import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,6 +33,28 @@ fun SettingsRoute(navController: NavController, vm: SettingsViewModel = hiltView
     val ui by vm.ui.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val createDoc = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            val json = ui.backupJson ?: return@rememberLauncherForActivityResult
+            try { ctx.contentResolver.openOutputStream(uri)?.use { it.write(json.toByteArray()) } } catch (_: Exception) {}
+        }
+    }
+    val openDoc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                val json = ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: return@rememberLauncherForActivityResult
+                vm.setBackupJson(json)
+                scope.launch { vm.importBackup() }
+            } catch (_: Exception) {}
+        }
+    }
+    val widgetPick = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            val id = res.data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1) ?: -1
+            vm.onWidgetPicked(id)
+        }
+    }
+    var gesturePickerFor by remember { mutableStateOf<LauncherGesture?>(null) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -44,7 +70,7 @@ fun SettingsRoute(navController: NavController, vm: SettingsViewModel = hiltView
                 Card(Modifier.fillMaxWidth()){
                     Column(Modifier.padding(12.dp), verticalArrangement=Arrangement.spacedBy(4.dp)){
                         Text(ui.deviceLabel, style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Refresh rate ${ui.refreshHz}Hz • sw${ui.swDp}dp • ${ui.layoutMode}", style=MaterialTheme.typography.labelSmall)
+                        Text("Refresh rate ${ui.refreshHz}Hz \u2022 sw${ui.swDp}dp \u2022 ${ui.layoutMode}", style=MaterialTheme.typography.labelSmall)
                         Text("Profiles: ${ui.profilesLabel}", style=MaterialTheme.typography.labelSmall)
                     }
                 }
@@ -59,14 +85,15 @@ fun SettingsRoute(navController: NavController, vm: SettingsViewModel = hiltView
             }
             item{
                 Text("Gestures", style=MaterialTheme.typography.titleMedium)
-                Text("Tap a gesture to cycle its action. SwipeDown opens search by default.", style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Tap to choose action. Long-press gesture on Home uses these bindings; swipe up/down and double-tap live-update.", style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
             items(LauncherGesture.all){ g ->
                 val current = ui.gestureMap[g] ?: LauncherAction.None
                 ListItem(
                     headlineContent={ Text(g::class.simpleName ?: "Gesture") },
                     supportingContent={ Text(LauncherAction.displayName(current)) },
-                    modifier=Modifier.clickable{ vm.cycleGesture(g) }
+                    trailingContent={ TextButton(onClick={ gesturePickerFor = g }){ Text("Choose") } },
+                    modifier=Modifier.clickable{ gesturePickerFor = g }
                 )
                 Divider()
             }
@@ -82,16 +109,27 @@ fun SettingsRoute(navController: NavController, vm: SettingsViewModel = hiltView
                 ListItem(
                     headlineContent={ Text(s.name)},
                     supportingContent={ Text(s.id.take(8))},
-                    trailingContent={ TextButton(onClick={ vm.deleteStream(s.id)}){ Text("Delete")}}
+                    trailingContent={
+                        Row(horizontalArrangement=Arrangement.spacedBy(2.dp), verticalAlignment=Alignment.CenterVertically){
+                            TextButton(onClick={ vm.moveStream(s.id, -1)}){ Text("\u2191") }
+                            TextButton(onClick={ vm.moveStream(s.id, 1)}){ Text("\u2193") }
+                            TextButton(onClick={ vm.deleteStream(s.id)}){ Text("Delete")}
+                        }
+                    },
+                    modifier=Modifier.clickable{ navController.navigate("stream/${s.id}") }
                 )
             }
             item{
                 Text("Notifications", style=MaterialTheme.typography.titleMedium)
-                Text("NotificationListenerService processes locally, never uploads. Tap to open system permission.", style=MaterialTheme.typography.bodySmall)
-                Button(onClick={ try{ ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}catch(_:Exception){} }){ Text("Open notification access")}
+                Text(if(ui.hasNotificationAccess) "Listener enabled \u2022 badges live" else "NotificationListenerService processes locally, never uploads. Enable to show workspace badges.", style=MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp), verticalAlignment=Alignment.CenterVertically){
+                    Button(onClick={ try{ ctx.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}catch(_:Exception){} }){ Text(if(ui.hasNotificationAccess) "Manage access" else "Enable access")}
+                    if(!ui.hasNotificationAccess) Text("Disabled", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.error)
+                    else Text("Enabled", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.primary)
+                }
                 if(ui.notifications.isNotEmpty()){
-                    ui.notifications.forEach{ (pkg, list) ->
-                        Text("$pkg: ${list.firstOrNull()?.title ?: ""} — ${list.firstOrNull()?.text ?: ""}", style=MaterialTheme.typography.labelSmall)
+                    ui.notifications.entries.take(6).forEach{ (pkg, list) ->
+                        Text("$pkg: ${list.firstOrNull()?.title ?: ""} — ${list.firstOrNull()?.text ?: ""} (${list.size})", style=MaterialTheme.typography.labelSmall)
                     }
                 } else {
                     Text("No notifications yet", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -99,23 +137,82 @@ fun SettingsRoute(navController: NavController, vm: SettingsViewModel = hiltView
             }
             item{
                 Text("Widgets", style=MaterialTheme.typography.titleMedium)
-                Text("Widget Deck hosts AppWidgetHost. Use Add widget below (picker intent).", style=MaterialTheme.typography.bodySmall)
-                Button(onClick={ vm.requestWidgetPicker(ctx)}){ Text("Pick widget")}
+                Text("Widget Deck hosts AppWidgetHost. Added widgets appear on Home. Use the picker below.", style=MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                    Button(onClick={
+                        try {
+                            val mgr = AppWidgetManager.getInstance(ctx)
+                            val idField = vm.javaClass.getDeclaredField("widgetRepository")
+                            // fallback: direct intent pick via vm
+                            vm.requestWidgetPicker(ctx)
+                        } catch(_:Exception){ vm.requestWidgetPicker(ctx) }
+                    }){ Text("Pick via Settings") }
+                    OutlinedButton(onClick={
+                        // Direct pick with result callback for persistence
+                        try {
+                            val mgr = AppWidgetManager.getInstance(ctx)
+                            // allocate via repo through vm helper - we do inline allocation here via EntryPoint
+                            val entry = dagger.hilt.android.EntryPointAccessors.fromApplication(ctx.applicationContext, com.adaptive.launcher.feature.home.WidgetEntryPoint::class.java)
+                            val repo = entry.widgetRepo()
+                            val id = repo.allocateId()
+                            if(id!=-1){
+                                val intent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply{ putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id) }
+                                widgetPick.launch(intent)
+                            }
+                        } catch(_:Exception){ vm.requestWidgetPicker(ctx) }
+                    }){ Text("Pick widget") }
+                }
                 Text("${ui.widgetInfo}", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
+                if(ui.widgetIds.isNotEmpty()){
+                    Text("Pinned IDs: ${ui.widgetIds.joinToString()}", style=MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                        ui.widgetIds.take(4).forEach{ wid ->
+                            AssistChip(onClick={ vm.removeWidget(wid) }, label={ Text("Remove $wid") })
+                        }
+                    }
+                }
             }
             item{
                 Text("Backup / Restore", style=MaterialTheme.typography.titleMedium)
+                Text("Save to file or load from file. Import validates schemaVersion.", style=MaterialTheme.typography.bodySmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
-                    Button(onClick={ scope.launch{ vm.exportBackup()} }){ Text("Export")}
-                    OutlinedButton(onClick={ scope.launch{ vm.importBackup()} }){ Text("Import")}
+                    Button(onClick={
+                        scope.launch{
+                            vm.exportBackup()
+                            val name = "adaptive-backup-${System.currentTimeMillis()}.json"
+                            createDoc.launch(name)
+                        }
+                    }){ Text("Export to file")}
+                    OutlinedButton(onClick={ openDoc.launch(arrayOf("application/json")) }){ Text("Import from file")}
                 }
-                ui.backupJson?.let{ Text(it.take(600), style=MaterialTheme.typography.labelSmall) }
+                Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                    OutlinedButton(onClick={ scope.launch{ vm.exportBackup() } }){ Text("Export (copy)") }
+                    OutlinedButton(onClick={ scope.launch{ vm.importBackup() } }){ Text("Import (paste)") }
+                }
+                ui.backupJson?.let{ Text(it.take(800), style=MaterialTheme.typography.labelSmall) }
                 ui.backupStatus?.let{ Text(it, color=MaterialTheme.colorScheme.primary, style=MaterialTheme.typography.labelMedium)}
+                var paste by remember{ mutableStateOf("")}
+                OutlinedTextField(value=paste, onValueChange={paste=it}, label={Text("Paste JSON to import")}, modifier=Modifier.fillMaxWidth(), minLines=2)
+                Button(onClick={ if(paste.isNotBlank()){ vm.setBackupJson(paste); scope.launch{ vm.importBackup() } } }, modifier=Modifier.fillMaxWidth()){ Text("Apply pasted JSON")}
             }
             item{
                 Text("Privacy", style=MaterialTheme.typography.titleMedium)
                 Text("Local-first. No account. No cloud. No ads. Contacts/calendar only with permission.", style=MaterialTheme.typography.bodySmall)
             }
         }
+    }
+    gesturePickerFor?.let { g ->
+        AlertDialog(onDismissRequest={ gesturePickerFor=null }, title={ Text("Choose action for ${g::class.simpleName}") }, text={
+            Column(verticalArrangement=Arrangement.spacedBy(4.dp)){
+                val options = listOf(LauncherAction.None, LauncherAction.OpenSearch, LauncherAction.OpenAppList, LauncherAction.OpenSettings, LauncherAction.OpenNotifications)
+                options.forEach{ a ->
+                    Row(Modifier.fillMaxWidth().clickable{ vm.setGestureDirect(g, a); gesturePickerFor=null }.padding(vertical=8.dp), verticalAlignment=Alignment.CenterVertically){
+                        RadioButton(selected = (ui.gestureMap[g]==a), onClick={ vm.setGestureDirect(g, a); gesturePickerFor=null })
+                        Spacer(Modifier.width(8.dp))
+                        Text(LauncherAction.displayName(a))
+                    }
+                }
+            }
+        }, confirmButton={ TextButton(onClick={ gesturePickerFor=null }){ Text("Close") } })
     }
 }

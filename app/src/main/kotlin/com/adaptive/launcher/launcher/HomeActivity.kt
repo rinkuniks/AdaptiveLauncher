@@ -14,6 +14,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
 import com.adaptive.launcher.core.device.DeviceProfileFactory
+import com.adaptive.launcher.core.performance.ColdStartTracer
+import com.adaptive.launcher.data.widgets.WidgetRepository
 import com.adaptive.launcher.domain.themes.ThemeRepository
 import com.adaptive.launcher.navigation.AppNavHost
 import com.adaptive.launcher.ui.theme.AdaptiveLauncherTheme
@@ -23,9 +25,11 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class HomeActivity : ComponentActivity() {
     @Inject lateinit var themeRepository: ThemeRepository
+    @Inject lateinit var widgetRepository: WidgetRepository
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        ColdStartTracer.markStart()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -43,6 +47,8 @@ class HomeActivity : ComponentActivity() {
             }
         }
     }
+    override fun onStart() { super.onStart(); try { widgetRepository.startListening() } catch (_: Exception) {} }
+    override fun onStop() { try { widgetRepository.stopListening() } catch (_: Exception) {}; super.onStop() }
     @Deprecated("Deprecated in Java")
     @Suppress("DEPRECATION")
     override fun onBackPressed() {}

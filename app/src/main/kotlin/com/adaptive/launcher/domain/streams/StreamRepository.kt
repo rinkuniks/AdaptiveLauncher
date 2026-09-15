@@ -16,6 +16,7 @@ class StreamRepository @Inject constructor(private val dao: StreamDao){
     fun apps(streamId:String): Flow<List<StreamAppCrossRef>> = dao.observeApps(streamId)
     suspend fun addApp(streamId:String, pkg:String, activity:String, serial:Long)= dao.addApp(StreamAppCrossRef(streamId,pkg,activity,serial))
     suspend fun removeApp(streamId:String, pkg:String)= dao.removeApp(streamId,pkg)
+    suspend fun reorder(ids: List<String>) { ids.forEachIndexed { idx, id -> dao.getStreams().find{ it.id==id }?.let{ dao.upsert(it.copy(position=idx)) } } }
     suspend fun seedDefaults(){
         if(dao.getStreams().isNotEmpty()) return
         listOf("Work","Social","Travel","Finance","Entertainment","Health","Study").forEachIndexed{ i,n -> dao.upsert(StreamEntity(UUID.randomUUID().toString(), n, i)) }

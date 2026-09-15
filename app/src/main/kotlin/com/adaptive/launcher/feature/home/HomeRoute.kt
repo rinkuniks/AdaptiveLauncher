@@ -1,5 +1,7 @@
 package com.adaptive.launcher.feature.home
 
+import android.app.Activity
+import android.appwidget.AppWidgetManager
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,15 +45,19 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adaptive.launcher.core.device.LayoutMode
 import com.adaptive.launcher.core.device.rememberLayoutConfig
 import com.adaptive.launcher.core.model.LauncherApp
+import com.adaptive.launcher.core.performance.ColdStartTracer
 import com.adaptive.launcher.data.home.AppListFilter
 import com.adaptive.launcher.data.home.HomeMode
+import com.adaptive.launcher.domain.gestures.LauncherAction
+import com.adaptive.launcher.domain.gestures.LauncherGesture
 import com.adaptive.launcher.domain.search.CalculatorProvider
+import com.adaptive.launcher.feature.widgets.WidgetDeck
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 @Composable
-fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Unit = {}, onOpenOnboarding: ()->Unit = {}) {
+fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Unit = {}, onOpenOnboarding: ()->Unit = {}, onOpenStream: (String)->Unit = {}) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val drawerApps by viewModel.drawerApps.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
@@ -59,6 +65,13 @@ fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Un
     val roleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         viewModel.refreshDefaultLauncherState()
     }
+    // Observe gesture actions for reactive handling
+    val swipeUpAction by viewModel.gestureFlow(LauncherGesture.SwipeUp).collectAsStateWithLifecycle(initialValue = LauncherAction.OpenAppList)
+    val swipeDownAction by viewModel.gestureFlow(LauncherGesture.SwipeDown).collectAsStateWithLifecycle(initialValue = LauncherAction.OpenSearch)
+    val doubleTapAction by viewModel.gestureFlow(LauncherGesture.DoubleTap).collectAsStateWithLifecycle(initialValue = LauncherAction.None)
+
+    LaunchedEffect(Unit) { ColdStartTracer.markFirstFrame() }
+
     HomeScreen(
         uiState = ui,
         drawerApps = drawerApps,
@@ -72,10 +85,17 @@ fun HomeRoute(viewModel: HomeViewModel = hiltViewModel(), onOpenSettings: ()->Un
         onPin = { viewModel.pinApp(it) },
         onUnpin = { viewModel.unpinApp(it) },
         onOpenSettings = onOpenSettings,
+        onOpenStream = onOpenStream,
         onAddToStream = { streamId, app -> viewModel.addToStream(streamId, app) },
+        onRemoveFromStream = { streamId, pkg -> viewModel.removeFromStream(streamId, pkg) },
         onSetFilter = { viewModel.setFilter(it) },
         onSetHomeMode = { viewModel.setHomeMode(it) },
         onToggleHomePkg = { viewModel.toggleHomePackage(it) },
+        onPerformSwipeUp = { viewModel.performGesture(swipeUpAction, onOpenSearch = { viewModel.setSearching(true) }, onOpenAppList = {}, onOpenSettings = onOpenSettings) },
+        onPerformSwipeDown = { viewModel.performGesture(swipeDownAction, onOpenSearch = { viewModel.setSearching(true) }, onOpenAppList = {}, onOpenSettings = onOpenSettings) },
+        onPerformDoubleTap = { viewModel.performGesture(doubleTapAction, onOpenSearch = { viewModel.setSearching(!ui.isSearching) }, onOpenAppList = {}, onOpenSettings = onOpenSettings) },
+        onAddWidgetId = { id -> viewModel.addWidgetId(id) },
+        onRemoveWidgetId = { id -> viewModel.removeWidgetId(id) },
         onRequestDefaultLauncher = {
             val intent = viewModel.requestDefaultLauncherIntent()
             if (intent != null) {
@@ -102,10 +122,17 @@ fun HomeScreen(
     onPin: (LauncherApp) -> Unit,
     onUnpin: (LauncherApp) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenStream: (String) -> Unit,
     onAddToStream: (String, LauncherApp) -> Unit,
+    onRemoveFromStream: (String, String) -> Unit,
     onSetFilter: (AppListFilter) -> Unit,
     onSetHomeMode: (HomeMode) -> Unit,
     onToggleHomePkg: (String) -> Unit,
+    onPerformSwipeUp: () -> Unit,
+    onPerformSwipeDown: () -> Unit,
+    onPerformDoubleTap: () -> Unit,
+    onAddWidgetId: (Int) -> Unit,
+    onRemoveWidgetId: (Int) -> Unit,
     onRequestDefaultLauncher: () -> Unit,
 ) {
     var showAppSheet by remember { mutableStateOf<LauncherApp?>(null) }
@@ -117,6 +144,7 @@ fun HomeScreen(
     val layout = rememberLayoutConfig()
     val myUser = android.os.Process.myUserHandle()
     val calculator = remember { CalculatorProvider() }
+    val context = LocalContext.current
 
     val horizontalPad = when {
         layout.swDp >= 600 -> 28.dp
@@ -138,6 +166,14 @@ fun HomeScreen(
         if (idx >= 0) listState.animateScrollToItem(idx)
     }
 
+    // Notification access check for banner
+    val hasNotifAccess = remember {
+        try {
+            val enabled = android.provider.Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: ""
+            enabled.contains(context.packageName)
+        } catch (_: Exception) { false }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -148,15 +184,26 @@ fun HomeScreen(
                     onDragStart = { totalY = 0f },
                     onVerticalDrag = { change, dragAmount -> totalY += dragAmount; change.consume() },
                     onDragEnd = {
-                        if (totalY < -90 && !uiState.isSearching && !showDrawer) showDrawer = true
-                        if (totalY > 110 && !uiState.isSearching && !showDrawer) onSearchingChange(true)
+                        if (totalY < -90 && !uiState.isSearching && !showDrawer) {
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onPerformSwipeUp()
+                            // Default still opens drawer if gesture is OpenAppList/None
+                            if (!showDrawer) showDrawer = true
+                        }
+                        if (totalY > 110 && !uiState.isSearching && !showDrawer) {
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onPerformSwipeDown()
+                        }
                         if (totalY > 120 && showDrawer) showDrawer = false
                         totalY = 0f
                     }
                 )
             }
             .pointerInput(Unit) {
-                detectTapGestures(onDoubleTap = { if(!showDrawer) onSearchingChange(!uiState.isSearching) })
+                detectTapGestures(onDoubleTap = {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onPerformDoubleTap()
+                })
             }
     ) {
         Column(
@@ -184,6 +231,17 @@ fun HomeScreen(
                 }
             }
 
+            if (!hasNotifAccess && uiState.notifications.isEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Enable notification badges for workspace", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            try { context.startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
+                        }) { Text("Enable", style = MaterialTheme.typography.labelSmall) }
+                    }
+                }
+            }
+
             // Filter chips - All / Installed (default) / System
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Filter:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(end = 2.dp))
@@ -206,12 +264,15 @@ fun HomeScreen(
                 }
             }
 
+            // Widget Deck (always visible section, even if empty shows affordance)
+            WidgetDeckSection(uiState = uiState, onAddWidgetId = onAddWidgetId, onRemoveWidgetId = onRemoveWidgetId, onOpenSettings = onOpenSettings)
+
             if (uiState.contextSuggestions.isNotEmpty() && !uiState.isSearching && uiState.selectedSection == null) {
                 Card(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("Suggested", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                            Text("· based on time & recent use", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("based on time & recent use", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(uiState.contextSuggestions.take(6), key = { it.packageName }) { s ->
@@ -223,9 +284,29 @@ fun HomeScreen(
                 }
             }
 
+            // Notification workspace pills: show up to 3 most recent app notifications as chips
+            if (uiState.notifications.isNotEmpty() && !uiState.isSearching) {
+                val pillApps = uiState.notifications.entries.sortedByDescending { it.value.maxOfOrNull { n -> n.whenMs } ?: 0L }.take(4)
+                if (pillApps.isNotEmpty()) {
+                    LazyRow(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(pillApps, key = { it.key }) { (pkg, list) ->
+                            val app = uiState.allApps.find { it.packageName == pkg }
+                            val title = list.firstOrNull()?.title ?: list.firstOrNull()?.text ?: pkg
+                            AssistChip(
+                                onClick = { app?.let(onLaunch) },
+                                label = { Text("${app?.label ?: pkg}  ${list.size}", maxLines = 1, style = MaterialTheme.typography.labelSmall) },
+                                leadingIcon = { Badge(containerColor = MaterialTheme.colorScheme.error) { Text(list.size.toString(), color = MaterialTheme.colorScheme.onError, fontSize = 10.sp) } }
+                            )
+                        }
+                    }
+                }
+            }
+
             if (uiState.streams.isNotEmpty() && !uiState.isSearching) {
                 LazyRow(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(end = 8.dp)) {
-                    items(uiState.streams, key = { it.id }) { stream -> FilterChip(selected = false, onClick = {}, label = { Text(stream.name) }) }
+                    items(uiState.streams, key = { it.id }) { stream ->
+                        FilterChip(selected = false, onClick = { onOpenStream(stream.id) }, label = { Text(stream.name) })
+                    }
                     item { AssistChip(onClick = onOpenSettings, label = { Text("+ Stream") }) }
                 }
             }
@@ -316,7 +397,7 @@ fun HomeScreen(
                 Row(Modifier.fillMaxWidth().clickable{ showDrawer=true }.padding(vertical=8.dp), horizontalArrangement=Arrangement.Center, verticalAlignment=Alignment.CenterVertically){
                     Icon(Icons.Filled.KeyboardArrowUp, contentDescription=null, tint=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Swipe up for all apps  •  ${drawerApps.size} apps  •  ${uiState.appFilter.name}", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Swipe up for all apps  \u2022  ${drawerApps.size} apps  \u2022  ${uiState.appFilter.name}", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(8.dp))
                     AssistChip(onClick={ showDrawer=true }, label={ Text("Open drawer")})
                 }
@@ -339,7 +420,7 @@ fun HomeScreen(
                         }
                     }
                 }
-                Text("${drawerApps.size} apps  •  ${uiState.appFilter.name}  •  tap or long-press", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=4.dp, bottom=8.dp))
+                Text("${drawerApps.size} apps  \u2022  ${uiState.appFilter.name}  \u2022  tap or long-press", style=MaterialTheme.typography.labelSmall, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=4.dp, bottom=8.dp))
                 val groupedDrawer = drawerApps.groupBy{ it.section }.toList().sortedBy{ if(it.first=='#') Int.MAX_VALUE else it.first.code }
                 LazyColumn(state=drawerListState, modifier=Modifier.fillMaxWidth().heightIn(max=420.dp), contentPadding=PaddingValues(bottom=16.dp)){
                     groupedDrawer.forEach{ (section, apps) ->
@@ -358,7 +439,7 @@ fun HomeScreen(
             onDismissRequest={ showHomePicker=false },
             title={ Text("Choose home apps")},
             text={
-                val all = drawerApps.take(120)
+                val all = drawerApps.take(140)
                 LazyColumn(modifier=Modifier.fillMaxWidth().heightIn(max=380.dp)){
                     items(all, key={ it.packageName + "_pick"}){ app ->
                         val checked = app.packageName in uiState.homePackages
@@ -375,12 +456,69 @@ fun HomeScreen(
                 }
             },
             confirmButton={ TextButton(onClick={ showHomePicker=false}){ Text("Done")}},
-            dismissButton={ TextButton(onClick={
-                // select none -> auto picks major; keep as is
-                showHomePicker=false
-            }){ Text("Close")}}
+            dismissButton={ TextButton(onClick={ showHomePicker=false }){ Text("Close")}}
         )
     }
+}
+
+@Composable
+private fun WidgetDeckSection(uiState: HomeUiState, onAddWidgetId: (Int)->Unit, onRemoveWidgetId: (Int)->Unit, onOpenSettings: ()->Unit) {
+    val context = LocalContext.current
+    var injectedHelper: com.adaptive.launcher.domain.widgets.WidgetHostHelper? by remember { mutableStateOf(null) }
+    var injectedRepo: com.adaptive.launcher.data.widgets.WidgetRepository? by remember { mutableStateOf(null) }
+    // Lazy resolve via Hilt EntryPoint if available, else degrade gracefully
+    LaunchedEffect(Unit) {
+        try {
+            val entry = dagger.hilt.android.EntryPointAccessors.fromApplication(context.applicationContext, WidgetEntryPoint::class.java)
+            injectedHelper = entry.widgetHelper()
+            injectedRepo = entry.widgetRepo()
+        } catch (_: Exception) {}
+    }
+    val widgetIds = uiState.widgetIds
+    val pickLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            val id = data?.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, -1) ?: -1
+            if (id != -1) onAddWidgetId(id)
+        }
+    }
+    // Only render deck when we have helper/repo and on APIs where host works; always show add affordance
+    if (widgetIds.isNotEmpty() && injectedHelper != null && injectedRepo != null) {
+        Box(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+            WidgetDeck(widgetIds = widgetIds, helper = injectedHelper!!, repository = injectedRepo!!, onRemove = onRemoveWidgetId, onAddClicked = {
+                try {
+                    val id = injectedRepo!!.allocateId()
+                    if (id != -1) {
+                        val intent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply { putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id) }
+                        pickLauncher.launch(intent)
+                    }
+                } catch (_: Exception) {}
+            })
+        }
+    } else if (widgetIds.isEmpty()) {
+        // Minimal affordance row so feature is discoverable without clutter
+        Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Widgets", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = {
+                try {
+                    if (injectedRepo != null) {
+                        val id = injectedRepo!!.allocateId()
+                        if (id != -1) {
+                            val intent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply { putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id) }
+                            pickLauncher.launch(intent)
+                        }
+                    } else onOpenSettings()
+                } catch (_: Exception) { onOpenSettings() }
+            }) { Text("Add widget", style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+}
+
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+interface WidgetEntryPoint {
+    fun widgetHelper(): com.adaptive.launcher.domain.widgets.WidgetHostHelper
+    fun widgetRepo(): com.adaptive.launcher.data.widgets.WidgetRepository
 }
 
 @Composable
@@ -400,11 +538,11 @@ private fun SearchBar(query: String, isSearching: Boolean, onQueryChange: (Strin
     Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
         if (!isSearching) {
             Box(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).clickable { onSearchingChange(true) }.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.width(8.dp)); Text("Search apps  ·  swipe down  ·  double-tap", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
+                Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.width(8.dp)); Text("Search apps  \u00b7  swipe down  \u00b7  double-tap", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                BasicTextField(value = query, onValueChange = onQueryChange, modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 14.dp, vertical = 12.dp), singleLine = true, decorationBox = { inner -> if (query.isEmpty()) Text("Type to search  •  try \"yt\"  •  \"12*19\"", color = MaterialTheme.colorScheme.onSurfaceVariant); inner() })
+                BasicTextField(value = query, onValueChange = onQueryChange, modifier = Modifier.weight(1f).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 14.dp, vertical = 12.dp), singleLine = true, decorationBox = { inner -> if (query.isEmpty()) Text("Type to search  \u2022  try \"yt\"  \u2022  \"12*19\"", color = MaterialTheme.colorScheme.onSurfaceVariant); inner() })
                 Spacer(Modifier.width(8.dp)); TextButton(onClick = { onSearchingChange(false) }) { Text("Cancel") }
             }
         }

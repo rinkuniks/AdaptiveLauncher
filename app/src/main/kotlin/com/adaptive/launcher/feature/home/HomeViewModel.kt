@@ -11,9 +11,11 @@ import com.adaptive.launcher.data.home.HomeMode
 import com.adaptive.launcher.data.home.HomePrefsRepository
 import com.adaptive.launcher.data.notifications.NotificationRepository
 import com.adaptive.launcher.data.shortcuts.ShortcutRepository
+import com.adaptive.launcher.data.widgets.WidgetRepository
 import com.adaptive.launcher.data.backup.BackupRepository
 import com.adaptive.launcher.domain.context.ContextEngine
 import com.adaptive.launcher.domain.context.UsageRepository
+import com.adaptive.launcher.domain.gestures.GestureMapper
 import com.adaptive.launcher.domain.gestures.GestureRepository
 import com.adaptive.launcher.domain.gestures.LauncherAction
 import com.adaptive.launcher.domain.gestures.LauncherGesture
@@ -47,6 +49,7 @@ data class HomeUiState(
     val contextSuggestions: List<com.adaptive.launcher.domain.context.ContextSuggestion> = emptyList(),
     val streams: List<com.adaptive.launcher.data.streams.StreamEntity> = emptyList(),
     val notifications: Map<String, List<com.adaptive.launcher.data.notifications.AppNotification>> = emptyMap(),
+    val widgetIds: List<Int> = emptyList(),
 )
 
 @OptIn(FlowPreview::class)
@@ -63,9 +66,11 @@ class HomeViewModel @Inject constructor(
     private val notificationRepository: NotificationRepository,
     private val profileManager: ProfileManager,
     private val gestureRepository: GestureRepository,
+    private val gestureMapper: GestureMapper,
     private val backupRepository: BackupRepository,
     private val shortcutRepository: ShortcutRepository,
     private val homePrefsRepository: HomePrefsRepository,
+    private val widgetRepository: WidgetRepository,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -87,6 +92,7 @@ class HomeViewModel @Inject constructor(
         homePrefsRepository.filter,
         homePrefsRepository.homeMode,
         homePrefsRepository.homePackages,
+        widgetRepository.widgetIds,
     ) { args ->
         val apps = args[0] as List<LauncherApp>
         val favEntities = args[1] as List<com.adaptive.launcher.data.favorites.FavoriteEntity>
@@ -99,6 +105,7 @@ class HomeViewModel @Inject constructor(
         val filter = args[8] as AppListFilter
         val homeMode = args[9] as HomeMode
         val homePkgs = args[10] as Set<String>
+        val widgetIds = args[11] as List<Int>
 
         val favApps = favEntities.mapNotNull { fav -> apps.find { it.packageName == fav.packageName } }
         val favSet = favApps.map { it.packageName to it.user }.toSet()
@@ -153,6 +160,7 @@ class HomeViewModel @Inject constructor(
             contextSuggestions = suggestions,
             streams = streams,
             notifications = notifs,
+            widgetIds = widgetIds,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HomeUiState())
 
@@ -233,12 +241,22 @@ class HomeViewModel @Inject constructor(
     fun createStream(name: String){ viewModelScope.launch{ streamRepository.create(name) } }
     fun deleteStream(id: String){ viewModelScope.launch{ streamRepository.delete(id) } }
     fun addToStream(streamId: String, app: LauncherApp){ viewModelScope.launch{ streamRepository.addApp(streamId, app.packageName, app.activityName, app.user.hashCode().toLong()) } }
+    fun removeFromStream(streamId: String, packageName: String){ viewModelScope.launch{ streamRepository.removeApp(streamId, packageName) } }
 
     suspend fun exportBackup(): String = backupRepository.export()
     suspend fun importBackup(json: String): Boolean = backupRepository.importBackup(json)
 
     suspend fun setGesture(g: LauncherGesture, a: LauncherAction) = gestureRepository.set(g, a)
     fun gestureFlow(g: LauncherGesture) = gestureRepository.observe(g)
+    fun performGesture(action: LauncherAction, onOpenSearch: ()->Unit={}, onOpenAppList: ()->Unit={}, onOpenSettings: ()->Unit={}) {
+        gestureMapper.perform(action, onOpenSearch, onOpenAppList)
+        // Extra: OpenSettings is handled by mapper via context intent; allow callback override
+        if (action == LauncherAction.OpenSettings) try { onOpenSettings() } catch(_:Exception){}
+    }
+
+    fun addWidgetId(id: Int){ viewModelScope.launch{ widgetRepository.addWidgetId(id) } }
+    fun removeWidgetId(id: Int){ viewModelScope.launch{ widgetRepository.removeWidgetId(id) } }
+    suspend fun allocateWidgetId(): Int = widgetRepository.allocateId()
 
     fun requestDefaultLauncherIntent() = defaultLauncherHelper.createRoleRequestIntent()
     fun refreshDefaultLauncherState() { selectedSectionFlow.value = selectedSectionFlow.value }
